@@ -1,6 +1,6 @@
 {
     "name": "@rustamspl/rsbuild",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "description": "build system",
     "main": "index.js",
     "scripts": {
@@ -26,6 +26,8 @@
         "estraverse": "^4.1.1",
         "msx": "^0.4.1",
         "node-sass": "^3.4.2",
-        "uglify-js": "^2.6.1"
+        "uglify-js": "^2.6.1",
+        "autoprefixer": "^6.3.3",
+        "postcss": "^5.0.16"
     }
 }

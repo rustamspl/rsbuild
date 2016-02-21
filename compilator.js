@@ -8,12 +8,62 @@ var sass = require('node-sass');
 var watch = require('./watch');
 var msx = require('msx');
 var babel = require('babel-core');
+var postcss = require('postcss');
+var autoprefixer = require('autoprefixer');
 //-----------------------------------------------
 function addJsExt(fn) {
     return fn.match(/\.js$/g) ? fn : (fn.match(/\/$/g) ? fn + 'index' : fn) + '.js';
 }
+function getCss(styles){
+     var css = styles.join('');
+    css = postcss([autoprefixer]).process(css, {
+        from: 'a.css',
+        to: 'b.css'
+    }).css;
+    return css;
+}
+function render(styles, deps) {
+   
+    var css = JSON.stringify(getCss(styles));
+    return [ //
+        '(function(){\n', //
+        'window.addEventListener("DOMContentLoaded",function(){\n', //
+        'var node = document.createElement("style");\n', //
+        'node.innerHTML = ' + css + ';\n', //
+        'document.body.appendChild(node);\n', //
+        '});\n', //
+        'var __require__=Array(' + deps.length + ');[', //
+        deps.map(function(d, i) {
+            var m = ['\nfunction(module,exports){\n', //
+                '/*(' + i + ') => ' + d.fn + ' */\n'
+            ];
+            m.push(d.code);
+            m.push('\n}\n\n');
+            return m.join('');
+        }).join(','), '].map(function(d,i){\n', //
+        'var exports={},m={exports:exports};\n', //
+        'd(m,exports);\n', //
+        '__require__[i]=m.exports;});\n', //
+        '})()' //
+    ].join('');
+}
+//-------------------------------------
+function makeRequireNode(depId) {
+    return {
+        type: 'MemberExpression',
+        object: {
+            type: 'Identifier',
+            name: '__require__'
+        },
+        property: {
+            type: 'Literal',
+            value: depId
+        },
+        computed: true
+    };
+}
 
-function compile(getFile, entry, outName) {
+function compile(getFile, opts) {
     var styles = [];
     var deps = new IndexedArray(function(v) {
         return v.fn;
@@ -42,8 +92,15 @@ function compile(getFile, entry, outName) {
         styles.push(result.css.toString());
     }
 
-    function addDep(basedir, fname) {
+    function requireCss(basedir, fname) {
         var fn = Path.relative('.', Path.resolve(basedir, fname));
+        var data = getFile(fn);
+        styles.push(data);
+    }
+
+    function addDep(basedir, fname) {
+        var fn = Path.relative('.', fname[0] === '.' ? Path.resolve(basedir, fname) : Path.normalize(require.resolve(fname)));
+        fn = addJsExt(fn);
         var id = deps.index[fn];
         if (id >= 0) {
             return id;
@@ -73,25 +130,11 @@ function compile(getFile, entry, outName) {
             ecmaVersion: 6
         });
         var hasExports = false;
-        //-------------
-        var ret = {
-            type: 'Identifier',
-            name: '__return__'
-        };
         var emptyEx = {
             type: 'EmptyStatement'
         };
         estraverse.replace(ast, {
             enter: function(node, parent) {
-                if (node.type == 'MemberExpression' //
-                    && node.object.type == 'Identifier' //
-                    && node.object.name == 'module' //
-                    && node.property.type == 'Identifier' //
-                    && node.property.name == 'exports' //
-                ) {
-                    hasExports = true;
-                    return ret;
-                } else
                 if (node.type == 'CallExpression' //
                     && node.callee.type == 'Identifier' //
                     && node.callee.name == 'require' //
@@ -104,13 +147,14 @@ function compile(getFile, entry, outName) {
                                 requireScss(basedir, requirefn);
                                 return emptyEx;
                             } else
+                            if (requirefn.match(/\.css/)) {
+                                requireCss(basedir, requirefn);
+                                return emptyEx;
+                            } else
                             if (requirefn.match(/\.jsx/)) {
-                                a0.value = addJsxDep(basedir, requirefn);
-                                node.callee.name = '__require__';
+                                return makeRequireNode(addJsxDep(basedir, requirefn));
                             } else {
-                                var jsfn = addJsExt(requirefn);
-                                a0.value = addDep(basedir, jsfn);
-                                node.callee.name = '__require__';
+                                return makeRequireNode(addDep(basedir, requirefn));
                             }
                         }
                     }
@@ -124,45 +168,20 @@ function compile(getFile, entry, outName) {
             fn: fn
         }
     }
-    var entryFn = addJsExt(entry);
-    var entryId = addDep(Path.resolve('.'), entryFn);
-
-    function render() {
-        return [ //           
-            '(function(){\n', //
-            'document.addEventListener("DOMContentLoaded",function(){\n', //
-            'var node = document.createElement("style");\n', //
-            'node.innerHTML = ' + JSON.stringify(styles.join('')) + ';\n', //
-            'document.getElementsByTagName("head")[0].appendChild(node);\n', //
-            '});\n', //
-            'var __require__=function(id){return __require__deps[id];};\n', //
-            'var __require__deps=[', //
-            deps.map(function(d, i) {
-                var m = ['\nfunction(){\n', //
-                    '/*(' + i + ') => ' + d.fn + ' */\n'
-                ];
-                d.hasExports && m.push('var __return__;\n');
-                m.push(d.code);
-                d.hasExports && m.push(';return __return__;\n');
-                m.push('\n}\n\n');
-                return m.join('');
-            }).join(','), '];\n', //
-            '__require__(' + entryId + ')();})()' //
-        ].join('');
-    }
-    var code = render();
+    var entryId = addDep(Path.resolve('.'), opts.entry);
+    var code = render(styles, deps);
     var res = babel.transform(code, {
         presets: "es2015",
         plugins: ["transform-object-assign"]
     });
     var ret = {};
-    ret[outName] = res.code;
+    ret[opts.outName] = res.code;
     return ret;
 };
 //-----------------------------------------------
-var Compilator = function(entry, outName) {
+var Compilator = function(opts) {
     return watch().pipe(function(getFile) {
-        return compile(getFile, entry, outName);
+        return compile(getFile, opts);
     });
 };
 module.exports = Compilator;

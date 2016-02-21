@@ -1,15 +1,30 @@
 'use strict';
 var fs = require('fs');
 var path = require('./path');
+
+function dumpError(err) {
+    if (typeof err === 'object') {
+        if (err.message) {
+            console.log('\nMessage: ' + err.message)
+        }
+        if (err.stack) {
+            console.log('\nStacktrace:')
+            console.log('====================')
+            console.log(err.stack);
+        }
+    } else {
+        console.log('dumpError :: argument is not an object:', err);
+    }
+}
 var Watch = function() {
     var files = {};
     var watchers = {};
-
     var queue = [];
     var timeout = null;
-    var used={
-        files:{}
+    var used = {
+        files: {}
     };
+
     function notifyDebounced() {
         clearTimeout(timeout);
         timeout = setTimeout(processQueue, 50);
@@ -26,7 +41,7 @@ var Watch = function() {
 
     function getFile(fn) {
         if (!(fn in files)) {
-            loadFile(fn);            
+            loadFile(fn);
         }
         if (!(fn in watchers)) {
             watchers[fn] = fs.watch(fn, function(evt, evtfn) {
@@ -34,26 +49,32 @@ var Watch = function() {
                     loadFile(fn);
                     notifyDebounced();
                 }
-            });          
-        }        
-        used.files[fn]=1;
+            });
+        }
+        used.files[fn] = 1;
         return files[fn];
     }
-    function removeUnusedFiles(){
-        for(var fn in watchers){
-            if(!(fn in used.files)){
+
+    function removeUnusedFiles() {
+        for (var fn in watchers) {
+            if (!(fn in used.files)) {
                 watchers[fn].close();
                 delete watchers[fn];
                 delete files[fn];
             }
         }
-        used.files={};
+        used.files = {};
     }
+
     function processQueue() {
-        removeUnusedFiles();
-        queue.reduce(function(p, c) {
-            return c(p);
-        }, getFile);
+        try {
+            removeUnusedFiles();
+            queue.reduce(function(p, c) {
+                return c(p);
+            }, getFile);
+        } catch (e) {
+            dumpError(e)
+        }
     }
     process.nextTick(processQueue);
     return {
