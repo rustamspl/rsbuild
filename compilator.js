@@ -6,42 +6,72 @@ var Path = require('./path');
 var IndexedArray = require('./indexed-array');
 var sass = require('node-sass');
 var watch = require('./watch');
+var msx = require('msx');
+var babel = require('babel-core');
 //-----------------------------------------------
 function addJsExt(fn) {
-    return fn.match(/\.js$/g) ? fn : fn + '.js';
+    return fn.match(/\.js$/g) ? fn : (fn.match(/\/$/g) ? fn + 'index' : fn) + '.js';
 }
 
-function compile(getFile, entry) {
+function compile(getFile, entry, outName) {
     var styles = [];
     var deps = new IndexedArray(function(v) {
         return v.fn;
     });
 
-    function requireScss(base, fname) {
-        var fn = Path.relative('.', Path.resolve(base, fname));
+    function importScss(entryScss) {
+        return function(url, prev) {
+            var base = Path.dirname(prev == 'stdin' ? entryScss : prev);
+            var fn = url.match(/\.scss$/g) ? url : url + '.scss';
+            fn = Path.relative('.', Path.resolve(base, fn));
+            var data = getFile(fn);
+            return {
+                contents: data
+            };
+        };
+    }
+
+    function requireScss(basedir, fname) {
+        var fn = Path.relative('.', Path.resolve(basedir, fname));
         var data = getFile(fn);
         var result = sass.renderSync({
             data: data,
-            importer: function(url, prev) {
-                console.log(url);
-            },
+            importer: importScss(fn),
             outputStyle: 'compressed'
         });
         styles.push(result.css.toString());
     }
 
-    function addDep(base, fname) {
-        var fn = Path.relative('.', Path.resolve(base, fname));
+    function addDep(basedir, fname) {
+        var fn = Path.relative('.', Path.resolve(basedir, fname));
         var id = deps.index[fn];
         if (id >= 0) {
             return id;
         }
-        return deps.push(getCode(fn)) - 1;
+        var data = getFile(fn);
+        var newbasedir = Path.dirname(fn);
+        return deps.push(getCode(newbasedir, data, fn)) - 1;
+    }
+
+    function addJsxDep(basedir, fname) {
+        var fn = Path.relative('.', Path.resolve(basedir, fname));
+        var id = deps.index[fn];
+        if (id >= 0) {
+            return id;
+        }
+        var jsxdata = getFile(fn);
+        var data = msx.transform(jsxdata, {
+            harmony: true
+        });
+        //console.log(data);
+        var newbasedir = Path.dirname(fn);
+        return deps.push(getCode(newbasedir, data, fn)) - 1;
     }
     //-------------------------------------
-    function getCode(fn) {
-        var data = getFile(fn);
-        var ast = acorn.parse(data);
+    function getCode(basedir, data, fn) {
+        var ast = acorn.parse(data, {
+            ecmaVersion: 6
+        });
         var hasExports = false;
         //-------------
         var ret = {
@@ -71,12 +101,17 @@ function compile(getFile, entry) {
                         if (a0.type == 'Literal') {
                             var requirefn = a0.value;
                             if (requirefn.match(/\.scss/)) {
-                                requireScss(Path.dirname(fn), requirefn);
+                                requireScss(basedir, requirefn);
                                 return emptyEx;
+                            } else
+                            if (requirefn.match(/\.jsx/)) {
+                                a0.value = addJsxDep(basedir, requirefn);
+                                node.callee.name = '__require__';
+                            } else {
+                                var jsfn = addJsExt(requirefn);
+                                a0.value = addDep(basedir, jsfn);
+                                node.callee.name = '__require__';
                             }
-                            var jsfn = addJsExt(requirefn);
-                            a0.value = addDep(Path.dirname(fn), jsfn);
-                            node.callee.name = '__require__';
                         }
                     }
                 }
@@ -93,14 +128,13 @@ function compile(getFile, entry) {
     var entryId = addDep(Path.resolve('.'), entryFn);
 
     function render() {
-        console.log(styles);
-        return [ //
-            ';document.addEventListener("DOMContentLoaded",function(){\n', //
+        return [ //           
+            '(function(){\n', //
+            'document.addEventListener("DOMContentLoaded",function(){\n', //
             'var node = document.createElement("style");\n', //
             'node.innerHTML = ' + JSON.stringify(styles.join('')) + ';\n', //
             'document.getElementsByTagName("head")[0].appendChild(node);\n', //
-            '})\n', //
-            ';(function(){\n', //
+            '});\n', //
             'var __require__=function(id){return __require__deps[id];};\n', //
             'var __require__deps=[', //
             deps.map(function(d, i) {
@@ -117,14 +151,18 @@ function compile(getFile, entry) {
         ].join('');
     }
     var code = render();
-    return {
-        'js/out.js': code
-    };
+    var res = babel.transform(code, {
+        presets: "es2015",
+        plugins: ["transform-object-assign"]
+    });
+    var ret = {};
+    ret[outName] = res.code;
+    return ret;
 };
 //-----------------------------------------------
-var Compilator = function(entry) {
+var Compilator = function(entry, outName) {
     return watch().pipe(function(getFile) {
-        return compile(getFile, entry);
+        return compile(getFile, entry, outName);
     });
 };
 module.exports = Compilator;
