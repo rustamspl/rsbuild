@@ -1,6 +1,6 @@
 {
     "name": "@rustamspl/rsbuild",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "build system",
     "main": "index.js",
     "scripts": {
@@ -16,7 +16,7 @@
         "url": "https://github.com/rustamspl/rsbuild/issues"
     },
     "homepage": "https://github.com/rustamspl/rsbuild#readme",
-    "devDependencies": {
+    "dependencies": {
         "acorn": "^3.0.2",
         "escodegen": "^1.8.0",
         "estraverse": "^4.1.1",
