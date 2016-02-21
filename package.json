@@ -1,6 +1,6 @@
 {
     "name": "@rustamspl/rsbuild",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "build system",
     "main": "index.js",
     "scripts": {
