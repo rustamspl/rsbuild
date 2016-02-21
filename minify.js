@@ -21,7 +21,7 @@
              if_return: true, // optimize if-s followed by return/continue
              join_vars: true, // join var declarations
              cascade: true, // try to cascade `right` into `left` in sequences
-             //side_effects: true, // drop side-effect-free statements
+             side_effects: true, // drop side-effect-free statements
              warnings: false // warn about potentially dangerous optimizations/code
          }
      }).code;
