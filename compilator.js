@@ -37,8 +37,11 @@ function getRealPath(fn, basedir) {
 }
 //-----------------------------------------------
 function getCss(styles) {
-
-    var css = styles.join('');
+    var css = styles.join('')//
+            .replace(/[\r\n\t ]{2,}/g,' ')//
+            .replace(/([\{:,])[\r\n\t ]/g,'$1')//
+            .replace(/[\r\n\t ]([\{:,])/g,'$1')//
+            ;
     // css = postcss([autoprefixer]).process(css, {
     //     from: 'a.css',
     //     to: 'b.css'
@@ -138,7 +141,7 @@ function commonTypeFn(args) {
         data: data,
         ctx: ctx
     };
-   // dep.name = getModuleId(dep);
+    // dep.name = getModuleId(dep);
     ctx.deps.push(dep);
     (opts.transformAstFn || transformJsAst)(dep);
     if (!dep.nord) {
@@ -164,11 +167,9 @@ jTypes.put('jsm', function(args) {
     return commonTypeFn(args);
 });
 jTypes.put('jss', function(args) {
-    //console.log('jss',args.fn,args.ctx.inCss);
-
-    if (args.ctx.inCss) {
+    //console.log('jss',args.fn,args.ctx.inJss);
+    if (args.ctx.inJss) {
         args.opts = {
-          
             transformAstFn: function(dep) {
                 dep.code = '';
                 dep.typ = 'css';
@@ -176,11 +177,10 @@ jTypes.put('jss', function(args) {
         };
     } else {
         args.opts = {
-     
             transformAstFn: function(dep) {
                 dep.typ = 'css';
                 var ctx = {
-                    inCss: true,
+                    inJss: true,
                     deps: new IndexedArray(function(v) {
                         return v.fn;
                     }),
@@ -213,10 +213,20 @@ jTypes.put('jss', function(args) {
                     args.ctx.styles.push('/*' + e + '*/');
                 }
                 // console.log(sandbox.y);
-              
             }
         };
     }
+    return commonTypeFn(args);
+});
+//--------------------------------------
+jTypes.put('css', function(args) {
+    args.opts = {
+        transformAstFn: function(dep) {
+            dep.code = '';
+            dep.typ = 'css';
+            args.ctx.styles.push(dep.data);
+        }
+    };
     return commonTypeFn(args);
 });
 //--------------------------------------
@@ -255,14 +265,13 @@ jsFns.put('require', function(args) {
 });
 jsFns.put('requireId', function(args) {
     var dep = getDep(args);
-    if(dep){
+    if (dep) {
         return {
-        type: 'Literal',
-        value: dep.id
-    };
+            type: 'Literal',
+            value: dep.id
+        };
     }
-    
-     return emptyEx;
+    return emptyEx;
 });
 //-------------------------------------
 function getTransformedJsCode(args) { //basedir, data, fn
