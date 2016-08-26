@@ -22,8 +22,12 @@ var Watch = function() {
     var queue = [];
     var timeout = null;
     var used = {
-        files: {}
+        files: {},
+        index:{},
+        ids:{},
+        counter:0
     };
+
 
     function notifyDebounced() {
         clearTimeout(timeout);
@@ -31,15 +35,22 @@ var Watch = function() {
     }
 
     function loadFile(fn) {
+        console.log(fn);
+
         if (!path.fileExists(fn)) {
-            var err = 'File not exists:' + fn;
+            var err='File not exists:' + fn;                  
             console.log(err);
-            throw err;
+            throw new Error(err);
         };
-        files[fn] = fs.readFileSync(fn).toString();
+        try{
+            files[fn] = fs.readFileSync(fn).toString();
+            d=false;
+        }catch(e){
+            notifyDebounced();
+        }  
     }
 
-    function getFile(fn) {
+    function getFileByName(fn) {
         if (!(fn in files)) {
             loadFile(fn);
         }
@@ -51,8 +62,28 @@ var Watch = function() {
                 }
             });
         }
-        used.files[fn] = 1;
-        return files[fn];
+        if(!used.files[fn]){
+            used.index[fn]=used.counter;  
+            used.ids[used.counter]=fn;
+            used.counter++;         
+            used.files[fn] = 1;
+        }
+        
+        return {
+            data:files[fn],
+            id:'m'+used.index[fn].toString(36)
+        }
+    }
+    // function getFileById(id) {
+    //     var fn=used.ids[id];
+    //     return {
+    //         data:files[fn],
+    //         id:used.index[fn].toString(36)
+    //     }
+    // }
+    function isFileLoaded(fn) {
+       // console.log("isFileLoaded",fn,fn in used.files);
+        return fn in used.files;        
     }
 
     function removeUnusedFiles() {
@@ -64,6 +95,9 @@ var Watch = function() {
             }
         }
         used.files = {};
+        used.index = {};
+        used.ids = {};
+        used.counter = 0;
     }
 
     function processQueue() {
@@ -71,7 +105,12 @@ var Watch = function() {
             removeUnusedFiles();
             queue.reduce(function(p, c) {
                 return c(p);
-            }, getFile);
+            }, {
+                getFileByName:getFileByName,
+               // getFileById:getFileById,
+                isFileLoaded:isFileLoaded
+            });
+            console.log('--');
         } catch (e) {
             dumpError(e)
         }

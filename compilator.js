@@ -4,184 +4,322 @@ var estraverse = require('estraverse');
 var escodegen = require('escodegen');
 var Path = require('./path');
 var IndexedArray = require('./indexed-array');
-var sass = require('node-sass');
 var watch = require('./watch');
-var msx = require('msx');
-var babel = require('babel-core');
-var postcss = require('postcss');
-var autoprefixer = require('autoprefixer');
+var vm = require('vm');
+var moTransform = function(code) {
+    return require("babel-core").transform(code, {
+        plugins: ["mithril-objectify"]
+    }).code;
+};
+var abs = require('absurd')();
+//-----------------------------------------------
+function Lst() {
+    var m = {};
+    return {
+        exist: function(n) {
+            return n in m;
+        },
+        get: function(n) {
+            return m[n];
+        },
+        put: function(n, v) {
+            m[n] = v;
+        }
+    };
+};
 //-----------------------------------------------
 function addJsExt(fn) {
-    return fn.match(/\.js$/g) ? fn : (fn.match(/\/$/g) ? fn + 'index' : fn) + '.js';
+    return fn.match(/\.js$/) ? fn : (fn.match(/\/$/) ? fn + 'index' : fn) + '.js';
 }
-function getCss(styles){
-     var css = styles.join('');
-    css = postcss([autoprefixer]).process(css, {
-        from: 'a.css',
-        to: 'b.css'
-    }).css;
+//-----------------------------------------------
+function getRealPath(fn, basedir) {
+    return Path.relative('.', fn[0] === '.' ? Path.resolve(basedir, fn) : Path.normalize(require.resolve(fn)));
+}
+//-----------------------------------------------
+function getCss(styles) {
+
+    var css = styles.join('');
+    // css = postcss([autoprefixer]).process(css, {
+    //     from: 'a.css',
+    //     to: 'b.css'
+    // }).css;
     return css;
 }
-function render(styles, deps) {
-   
-    var css = JSON.stringify(getCss(styles));
-    return [ //
-        '(function(){\n', //
-        'window.addEventListener("DOMContentLoaded",function(){\n', //
-        'var node = document.createElement("style");\n', //
+//-----------------------------------------------
+// function getModuleId(dep) {
+//     return 'm' + dep.id;
+// }
+//-----------------------------------------------
+function renderCss(styles) {
+    var cd = getCss(styles);
+    var css = JSON.stringify(cd);
+    var d = ['var node = document.createElement("style");\n', //
         'node.innerHTML = ' + css + ';\n', //
-        'document.body.appendChild(node);\n', //
-        '});\n', //
-        'var __require__=Array(' + deps.length + ');[', //
-        deps.map(function(d, i) {
-            var m = ['\nfunction(module,exports){\n', //
-                '/*(' + i + ') => ' + d.fn + ' */\n'
+        'document.head.appendChild(node);\n', //
+    ].join('');
+    return d;
+}
+//-----------------------------------------------
+function renderJs(deps) {
+    var r = deps.sort(function(a, b) {
+        return a.nord - b.nord;
+    }).reduce(function(p, d, i) {
+        if (d.typ == 'js') {
+            var m = [ //
+                '[function(module,exports){\n', //
+                '/*(' + d.id + ') => ' + d.fn + ' */\n'
             ];
             m.push(d.code);
-            m.push('\n}\n\n');
-            return m.join('');
-        }).join(','), '].map(function(d,i){\n', //
-        'var exports={},m={exports:exports};\n', //
-        'd(m,exports);\n', //
-        '__require__[i]=m.exports;});\n', //
-        '})()' //
+            m.push('\n},"');
+            m.push(d.id);
+            m.push('"]\n/*--------------------------------------*/\n');
+            p.push(m.join(''));
+        }
+        return p;
+    }, []);
+    return [ //
+        'var __require__={};[', //
+        r.join(','), '].map(function(d){\n', //
+        'var exports={},id=d[1],m={id:id,exports:exports};\n', //
+        'd[0](m,exports);\n', //
+        '__require__[id]=m.exports;});\n', //
     ].join('');
 }
+//-----------------------------------------------
+function render(ctx) {
+    return ['window.addEventListener("DOMContentLoaded",function(){\n', //
+        renderJs(ctx.deps), //
+        renderCss(ctx.styles), //
+        '});\n'].join('');
+    // return [ //
+    //     '(function(){\n', //
+    //     renderCss(ctx.styles), //
+    //     renderJs(ctx.deps), //
+    //     '})()' //
+    // ].join('');
+}
 //-------------------------------------
-function makeRequireNode(depId) {
-    return {
-        type: 'MemberExpression',
-        object: {
-            type: 'Identifier',
-            name: '__require__'
-        },
-        property: {
-            type: 'Literal',
-            value: depId
-        },
-        computed: true
+var emptyEx = {
+    type: 'EmptyStatement'
+};
+//-------------------------------------
+//--------------------------------------
+var jTypes = Lst();
+
+function commonTypeFn(args) {
+    var fn = args.fn;
+    var ctx = args.ctx;
+    var opts = args.opts || {};
+    var fn = opts.addJsExtFlag ? addJsExt(fn) : fn;
+    var fn = getRealPath(fn, args.basedir);
+    // if(opts.load_once){
+    //     if(args.ctx.fileds.isFileLoaded(fn)){
+    //         console.log('isFileLoaded');
+    //         //return null;
+    //     }
+    //     console.log('not isFileLoaded', fn);
+    // }
+    var id = ctx.deps.index[fn];
+    if (id >= 0) {
+        return ctx.deps[id];
+    }
+    var file = ctx.fileds.getFileByName(fn);
+    var data = file.data;
+    if (opts.transformDataFn) {
+        //   console.log('commonTypeFn.transformDataFn');
+        data = opts.transformDataFn(data)
+    }
+    var newbasedir = Path.dirname(fn);
+    var dep = {
+        orgfn: args.fn,
+        fn: fn,
+        id: file.id,
+        basedir: newbasedir,
+        data: data,
+        ctx: ctx
     };
+   // dep.name = getModuleId(dep);
+    ctx.deps.push(dep);
+    (opts.transformAstFn || transformJsAst)(dep);
+    if (!dep.nord) {
+        dep.nord = ++ctx.deps.seq;
+    }
+    return dep;
 }
 
-function compile(getFile, opts) {
-    var styles = [];
-    var deps = new IndexedArray(function(v) {
-        return v.fn;
+function transformJsAst(dep) {
+    dep.code = getTransformedJsCode(dep);
+    dep.typ = 'js';
+}
+jTypes.put('js', function(args) {
+    args.opts = {
+        addJsExtFlag: true
+    };
+    return commonTypeFn(args);
+});
+jTypes.put('jsm', function(args) {
+    args.opts = {
+        transformDataFn: moTransform
+    };
+    return commonTypeFn(args);
+});
+jTypes.put('jss', function(args) {
+    //console.log('jss',args.fn,args.ctx.inCss);
+
+    if (args.ctx.inCss) {
+        args.opts = {
+          
+            transformAstFn: function(dep) {
+                dep.code = '';
+                dep.typ = 'css';
+            }
+        };
+    } else {
+        args.opts = {
+     
+            transformAstFn: function(dep) {
+                dep.typ = 'css';
+                var ctx = {
+                    inCss: true,
+                    deps: new IndexedArray(function(v) {
+                        return v.fn;
+                    }),
+                    styles: [],
+                    fileds: dep.ctx.fileds
+                };
+                var cssdep = commonTypeFn({
+                    ctx: ctx,
+                    fn: args.fn,
+                    basedir: args.basedir
+                });
+                //var code = getTransformedJsCode(dep);
+                var code = renderJs(ctx.deps);
+                var js = code + 'y=__require__[x]();';
+                var sandbox = {
+                    x: cssdep.id,
+                    y: ''
+                };
+                try {
+                    vm.runInNewContext(js, sandbox, {
+                        displayErrors: true,
+                        timeout: 5000
+                    });
+                    var css = abs.add(sandbox.y).compile({
+                        minify: true
+                    });
+                    args.ctx.styles.push(css);
+                } catch (e) {
+                    console.log(e);
+                    args.ctx.styles.push('/*' + e + '*/');
+                }
+                // console.log(sandbox.y);
+              
+            }
+        };
+    }
+    return commonTypeFn(args);
+});
+//--------------------------------------
+function getDep(args) {
+    //console.log('getDep',args.fn);
+    var m = args.fn.match(/\.(\w+)$/);
+    var ext = 'js';
+    if (m) {
+        var testext = m[1];
+        if (jTypes.exist(testext)) {
+            ext = testext;
+        }
+    }
+    return jTypes.get(ext)(args);
+}
+//--------------------------------------
+var jsFns = Lst();
+jsFns.put('require', function(args) {
+    var dep = getDep(args);
+    //console.log(d);
+    if (dep && dep.typ == 'js') {
+        return {
+            type: 'MemberExpression',
+            object: {
+                type: 'Identifier',
+                name: '__require__'
+            },
+            property: {
+                type: 'Literal',
+                value: dep.id
+            },
+            computed: true
+        };
+    }
+    return emptyEx;
+});
+jsFns.put('requireId', function(args) {
+    var dep = getDep(args);
+    if(dep){
+        return {
+        type: 'Literal',
+        value: dep.id
+    };
+    }
+    
+     return emptyEx;
+});
+//-------------------------------------
+function getTransformedJsCode(args) { //basedir, data, fn
+    var basedir = args.basedir;
+    var data = args.data;
+    var fn = args.fn;
+    var ast = acorn.parse(data, {
+        ecmaVersion: 6
     });
-
-    function importScss(entryScss) {
-        return function(url, prev) {
-            var base = Path.dirname(prev == 'stdin' ? entryScss : prev);
-            var fn = url.match(/\.scss$/g) ? url : url + '.scss';
-            fn = Path.relative('.', Path.resolve(base, fn));
-            var data = getFile(fn);
-            return {
-                contents: data
-            };
-        };
-    }
-
-    function requireScss(basedir, fname) {
-        var fn = Path.relative('.', Path.resolve(basedir, fname));
-        var data = getFile(fn);
-        var result = sass.renderSync({
-            data: data,
-            importer: importScss(fn),
-            outputStyle: 'compressed'
-        });
-        styles.push(result.css.toString());
-    }
-
-    function requireCss(basedir, fname) {
-        var fn = Path.relative('.', Path.resolve(basedir, fname));
-        var data = getFile(fn);
-        styles.push(data);
-    }
-
-    function addDep(basedir, fname) {
-        var fn = Path.relative('.', fname[0] === '.' ? Path.resolve(basedir, fname) : Path.normalize(require.resolve(fname)));
-        fn = addJsExt(fn);
-        var id = deps.index[fn];
-        if (id >= 0) {
-            return id;
-        }
-        var data = getFile(fn);
-        var newbasedir = Path.dirname(fn);
-        return deps.push(getCode(newbasedir, data, fn)) - 1;
-    }
-
-    function addJsxDep(basedir, fname) {
-        var fn = Path.relative('.', Path.resolve(basedir, fname));
-        var id = deps.index[fn];
-        if (id >= 0) {
-            return id;
-        }
-        var jsxdata = getFile(fn);
-        var data = msx.transform(jsxdata, {
-            harmony: true
-        });
-        //console.log(data);
-        var newbasedir = Path.dirname(fn);
-        return deps.push(getCode(newbasedir, data, fn)) - 1;
-    }
-    //-------------------------------------
-    function getCode(basedir, data, fn) {
-        var ast = acorn.parse(data, {
-            ecmaVersion: 6
-        });
-        var hasExports = false;
-        var emptyEx = {
-            type: 'EmptyStatement'
-        };
-        estraverse.replace(ast, {
-            enter: function(node, parent) {
-                if (node.type == 'CallExpression' //
-                    && node.callee.type == 'Identifier' //
-                    && node.callee.name == 'require' //
-                ) {
-                    if (node.arguments.length >= 1) {
-                        var a0 = node.arguments[0];
-                        if (a0.type == 'Literal') {
-                            var requirefn = a0.value;
-                            if (requirefn.match(/\.scss/)) {
-                                requireScss(basedir, requirefn);
-                                return emptyEx;
-                            } else
-                            if (requirefn.match(/\.css/)) {
-                                requireCss(basedir, requirefn);
-                                return emptyEx;
-                            } else
-                            if (requirefn.match(/\.jsx/)) {
-                                return makeRequireNode(addJsxDep(basedir, requirefn));
-                            } else {
-                                return makeRequireNode(addDep(basedir, requirefn));
-                            }
-                        }
+    //   var hasExports = false;
+    estraverse.replace(ast, {
+        enter: function(node, parent) {
+            if (node.type == 'CallExpression' //
+                && node.callee.type == 'Identifier' //
+            ) {
+                //console.log(node.callee.name);
+                if (jsFns.exist(node.callee.name) && node.arguments.length >= 1) {
+                    // console.log(node.callee.name);
+                    var a0 = node.arguments[0];
+                    if (a0.type == 'Literal') {
+                        return jsFns.get(node.callee.name)({
+                            ctx: args.ctx,
+                            fn: a0.value,
+                            basedir: basedir
+                        });
                     }
                 }
             }
-        });
-        var code = escodegen.generate(ast);
-        return {
-            hasExports: hasExports,
-            code: code,
-            fn: fn
         }
-    }
-    var entryId = addDep(Path.resolve('.'), opts.entry);
-    var code = render(styles, deps);
-    var res = babel.transform(code, {
-        presets: "es2015",
-        plugins: ["transform-object-assign"]
     });
+    return escodegen.generate(ast);
+}
+//-------------------------------------
+function compile(fileds, opts) {
+    //--------------------------------------
+    var ctx = {
+        deps: new IndexedArray(function(v) {
+            return v.fn;
+        }),
+        depsOrder: [],
+        styles: [],
+        fileds: fileds
+    };
+    getDep({
+        ctx: ctx,
+        fn: opts.entry,
+        basedir: Path.resolve('.')
+    });
+    var code = render(ctx);
     var ret = {};
-    ret[opts.outName] = res.code;
+    ret[opts.outFile] = code;
     return ret;
 };
 //-----------------------------------------------
 var Compilator = function(opts) {
-    return watch().pipe(function(getFile) {
-        return compile(getFile, opts);
+    return watch().pipe(function(fileds) {
+        return compile(fileds, opts);
     });
 };
 module.exports = Compilator;

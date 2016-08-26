@@ -10,11 +10,13 @@ var P = function() {
             return this[i];
         }
     }
+
 };
 P.prototype = new Array;
 var IndexedArray = function(getField) {
     this._getField = getField;
     this.index = {};
+    this.seq=0;
 };
 IndexedArray.prototype = new P();
 module.exports = IndexedArray;
