@@ -33,15 +33,16 @@ function addJsExt(fn) {
 }
 //-----------------------------------------------
 function getRealPath(fn, basedir) {
+    //  console.log(basedir,fn);
     return Path.relative('.', fn[0] === '.' ? Path.resolve(basedir, fn) : Path.normalize(require.resolve(fn)));
 }
 //-----------------------------------------------
 function getCss(styles) {
-    var css = styles.join('')//
-            .replace(/[\r\n\t ]{2,}/g,' ')//
-            .replace(/([\{:,])[\r\n\t ]/g,'$1')//
-            .replace(/[\r\n\t ]([\{:,])/g,'$1')//
-            ;
+    var css = styles.join('') //
+    .replace(/[\r\n\t ]{2,}/g, ' ') //
+    .replace(/([\{:,])[\r\n\t ]/g, '$1') //
+    .replace(/[\r\n\t ]([\{:,])/g, '$1') //
+    ;
     // css = postcss([autoprefixer]).process(css, {
     //     from: 'a.css',
     //     to: 'b.css'
@@ -64,35 +65,53 @@ function renderCss(styles) {
 }
 //-----------------------------------------------
 function renderJs(deps) {
-    var r = deps.sort(function(a, b) {
-        return a.nord - b.nord;
-    }).reduce(function(p, d, i) {
+    var r = deps.reduce(function(p, d, i) {
         if (d.typ == 'js') {
-            var m = [ //
-                '[function(module,exports){\n', //
-                '/*(' + d.id + ') => ' + d.fn + ' */\n'
-            ];
-            m.push(d.code);
-            m.push('\n},"');
-            m.push(d.id);
-            m.push('"]\n/*--------------------------------------*/\n');
-            p.push(m.join(''));
+            p.push([ //
+                d.id, //
+                ':function(module,exports){\n', //
+                '/*(',
+                d.id, ') => ',
+                d.fn, ' */\n', //
+                d.code, //
+                '\n}\n/*--------------------------------------*/\n'
+            ].join(''));
         }
         return p;
     }, []);
     return [ //
-        'var __require__={};[', //
-        r.join(','), '].map(function(d){\n', //
-        'var exports={},id=d[1],m={id:id,exports:exports};\n', //
-        'd[0](m,exports);\n', //
-        '__require__[id]=m.exports;});\n', //
+        'var __modules_init__={},__require__ = (function() {\n', //
+        '    var __modules__ = {};\n', //
+        '    var __loading__ = {};\n', //
+        '    return function(n) {\n', //
+        '        if (!(n in __modules__)) {\n', //
+        '            var x = {}, m = {\n', //
+        '                    id: n,\n', //
+        '                    exports: x\n', //
+        '                };\n', //
+        '            if(__loading__[n])throw new Error("Circular dep:"+n);\n', //
+        '            __loading__[n] = 1;\n', //
+        '            __modules_init__.m[n](m, x);\n', //
+        '            __modules__[n] = m.exports;\n', //
+        '            delete __loading__[n];\n', //
+        '            delete m;\n', //
+        '            delete __modules_init__.m[n];\n', //
+        '        }\n', //
+        '        return __modules__[n];\n', //
+        '    }\n', //
+        '})();\n', //
+        '__modules_init__.m={\n', //
+        r.join(','), //
+        '};\n' //
     ].join('');
 }
 //-----------------------------------------------
-function render(ctx) {
+function render(ctx, entryId) {
     return ['window.addEventListener("DOMContentLoaded",function(){\n', //
         renderJs(ctx.deps), //
         renderCss(ctx.styles), //
+        //'(42,eval)("this").__require__=__require__;',//
+        '__require__("', entryId, '");', //
         '});\n'].join('');
     // return [ //
     //     '(function(){\n', //
@@ -102,7 +121,18 @@ function render(ctx) {
     // ].join('');
 }
 //-------------------------------------
-var emptyEx = {
+var allowedRequire = 'absurd'.split().reduce(function(p, c) {
+    p[c]=1;
+    return p;
+}, {});
+
+function myRequire(a) {
+    if(!(a in allowedRequire)) throw Error('bad arg:'+a);
+    return require(a);
+}
+//-------------------------------------
+var emptyEx = //estraverse.VisitorOption.Remove;
+{
     type: 'EmptyStatement'
 };
 //-------------------------------------
@@ -137,16 +167,14 @@ function commonTypeFn(args) {
         orgfn: args.fn,
         fn: fn,
         id: file.id,
+        typ: 'js',
         basedir: newbasedir,
         data: data,
         ctx: ctx
     };
-    // dep.name = getModuleId(dep);
     ctx.deps.push(dep);
+    // dep.name = getModuleId(dep);
     (opts.transformAstFn || transformJsAst)(dep);
-    if (!dep.nord) {
-        dep.nord = ++ctx.deps.seq;
-    }
     return dep;
 }
 
@@ -194,10 +222,11 @@ jTypes.put('jss', function(args) {
                 });
                 //var code = getTransformedJsCode(dep);
                 var code = renderJs(ctx.deps);
-                var js = code + 'y=__require__[x]();';
+                var js = code + 'y=__require__(x)();';
                 var sandbox = {
                     x: cssdep.id,
-                    y: ''
+                    y: '',
+                    require: myRequire
                 };
                 try {
                     vm.runInNewContext(js, sandbox, {
@@ -209,7 +238,9 @@ jTypes.put('jss', function(args) {
                     });
                     args.ctx.styles.push(css);
                 } catch (e) {
-                    console.log(e);
+                    console.log(args.fn, e);
+                    //  fs.writeFileSync('static/tmp.js', '/*' + args.fn + '*/\n' + js);
+                    //throw e;
                     args.ctx.styles.push('/*' + e + '*/');
                 }
                 // console.log(sandbox.y);
@@ -240,26 +271,35 @@ function getDep(args) {
             ext = testext;
         }
     }
-    return jTypes.get(ext)(args);
+    var r = jTypes.get(ext)(args);
+    // if(r&&!r.typ){
+    //     console.log(ext,args.fn);
+    // }
+    return r;
 }
 //--------------------------------------
 var jsFns = Lst();
 jsFns.put('require', function(args) {
     var dep = getDep(args);
     //console.log(d);
-    if (dep && dep.typ == 'js') {
-        return {
-            type: 'MemberExpression',
-            object: {
-                type: 'Identifier',
-                name: '__require__'
-            },
-            property: {
-                type: 'Literal',
-                value: dep.id
-            },
-            computed: true
-        };
+    if (dep) {
+        if (dep.typ == 'js') {
+            return {
+                type: 'CallExpression',
+                callee: {
+                    type: 'Identifier',
+                    name: '__require__'
+                },
+                arguments: [{
+                    type: 'Literal',
+                    value: dep.id
+                }]
+            };
+        } else if (dep.typ == 'css') {} else {
+            console.log('Empty  dep.typ:' + dep.typ, args.fn);
+        }
+    } else {
+        console.log('Empty dep:' + args.fn);
     }
     return emptyEx;
 });
@@ -271,6 +311,7 @@ jsFns.put('requireId', function(args) {
             value: dep.id
         };
     }
+    throw new Error('Empty dep:' + dep);
     return emptyEx;
 });
 //-------------------------------------
@@ -292,7 +333,7 @@ function getTransformedJsCode(args) { //basedir, data, fn
                     // console.log(node.callee.name);
                     var a0 = node.arguments[0];
                     if (a0.type == 'Literal') {
-                        return jsFns.get(node.callee.name)({
+                        if (!(a0.value in allowedRequire)) return jsFns.get(node.callee.name)({
                             ctx: args.ctx,
                             fn: a0.value,
                             basedir: basedir
@@ -315,12 +356,12 @@ function compile(fileds, opts) {
         styles: [],
         fileds: fileds
     };
-    getDep({
+    var d = getDep({
         ctx: ctx,
         fn: opts.entry,
         basedir: Path.resolve('.')
     });
-    var code = render(ctx);
+    var code = render(ctx, d.id);
     var ret = {};
     ret[opts.outFile] = code;
     return ret;
