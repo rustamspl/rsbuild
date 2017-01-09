@@ -17,6 +17,17 @@
     },
     "homepage": "https://github.com/rustamspl/rsbuild#readme",
     "dependencies": {
-
+        "acorn": "^3.0.2",
+        "babel": "^6.5.2",
+        "babel-core": "^6.5.2",
+        "babel-plugin-transform-object-assign": "^6.5.0",
+        "babel-preset-es2015": "^6.5.0",
+        "escodegen": "^1.8.0",
+        "estraverse": "^4.1.1",
+        "msx": "^0.4.1",
+        "node-sass": "^3.4.2",
+        "uglify-js": "^2.6.1",
+        "autoprefixer": "^6.3.3",
+        "postcss": "^5.0.16"
     }
 }
